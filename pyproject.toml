@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "graphcode"
+version = "0.1.0"
+description = "AST-driven code graph intelligence: Tree-sitter parsing, graph routing, Leiden clustering, hybrid search, and Qwen emulation"
+requires-python = ">=3.10"
+dependencies = [
+    # AST parsing
+    "tree-sitter>=0.22",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    # Graph engine
+    "networkx>=3.2",
+    # Community detection (optional — falls back gracefully)
+    "leidenalg>=0.10; sys_platform != 'win32'",
+    "igraph>=0.11; sys_platform != 'win32'",
+    # Search
+    "rank-bm25>=0.2.2",
+    "numpy>=1.26",
+    # Semantic embeddings (optional — skip with --no-semantic)
+    "sentence-transformers>=2.6",
+    # LadybugDB (KuzuDB) — optional
+    "kuzu>=0.4",
+    # LLM
+    "transformers>=4.40",
+    # CLI & UI
+    "typer>=0.12",
+    "rich>=13.7",
+    # Data models
+    "pydantic>=2.6",
+    # .gitignore aware file walking
+    "pathspec>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "pytest-cov",
+]
+local-llm = [
+    "torch>=2.2",
+    "accelerate>=0.28",
+]
+
+[project.scripts]
+graphcode = "graphcode.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/graphcode"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
