@@ -6,6 +6,8 @@ wrapper so the underlying library can be swapped without touching callers.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -57,9 +59,8 @@ class CodeGraph:
     def add_edge(self, edge: SymbolEdge) -> None:
         if not (self._g.has_node(edge.source_id) and self._g.has_node(edge.target_id)):
             return
-        # Avoid duplicate edges of the same type between the same pair
-        for _, _, d in self._g.out_edges(edge.source_id, data=True):
-            pass  # just ensure iteration works
+        if self.has_edge(edge.source_id, edge.target_id, edge.edge_type):
+            return
         self._g.add_edge(
             edge.source_id,
             edge.target_id,
@@ -77,6 +78,20 @@ class CodeGraph:
             if d.get("edge_type") == edge_type.value:
                 return True
         return False
+
+    def remove_edge(self, source_id: str, target_id: str, edge_type: EdgeType | None = None) -> None:
+        """Remove edges between source and target. If edge_type given, only remove that type."""
+        if not self._g.has_edge(source_id, target_id):
+            return
+        if edge_type is None:
+            self._g.remove_edges_from([(source_id, target_id)])
+            return
+        keys_to_remove = [
+            k for k, d in self._g[source_id][target_id].items()
+            if d.get("edge_type") == edge_type.value
+        ]
+        for k in keys_to_remove:
+            self._g.remove_edge(source_id, target_id, key=k)
 
     def edges(
         self,
@@ -165,3 +180,35 @@ class CodeGraph:
     def __repr__(self) -> str:
         s = self.stats()
         return f"<CodeGraph nodes={s['nodes']} edges={s['edges']}>"
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        """Save the graph to a JSON file."""
+        data = {
+            "nodes": [
+                {"id": n, **dict(d)}
+                for n, d in self._g.nodes(data=True)
+            ],
+            "edges": [
+                {"source": u, "target": v, **dict(d)}
+                for u, v, d in self._g.edges(data=True)
+            ],
+        }
+        Path(path).write_text(json.dumps(data, indent=2))
+
+    @classmethod
+    def load(cls, path: str) -> "CodeGraph":
+        """Load a graph from a JSON file."""
+        raw = json.loads(Path(path).read_text())
+        graph = cls()
+        for node in raw["nodes"]:
+            nid = node.pop("id")
+            graph._g.add_node(nid, **node)
+        for edge in raw["edges"]:
+            src = edge.pop("source")
+            tgt = edge.pop("target")
+            graph._g.add_edge(src, tgt, **edge)
+        return graph

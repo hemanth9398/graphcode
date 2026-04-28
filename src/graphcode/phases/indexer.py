@@ -93,8 +93,8 @@ class HybridIndex:
 
         n = len(self._node_ids)
         rrf_scores = [0.0] * n
-        ranked_bm25: list[int] = []
-        ranked_sem: list[int] = []
+        bm25_rank_of: dict[int, int] = {}
+        sem_rank_of: dict[int, int] = {}
 
         # BM25
         if self._bm25 is not None:
@@ -102,6 +102,7 @@ class HybridIndex:
             ranked_bm25 = sorted(range(n), key=lambda i: raw[i], reverse=True)
             for rank, idx in enumerate(ranked_bm25):
                 rrf_scores[idx] += 1.0 / (60 + rank + 1)
+                bm25_rank_of[idx] = rank
 
         # Semantic cosine similarity
         if self._embedder is not None and self._embeddings is not None:
@@ -112,6 +113,7 @@ class HybridIndex:
             ranked_sem = sorted(range(n), key=lambda i: float(sims[i]), reverse=True)
             for rank, idx in enumerate(ranked_sem):
                 rrf_scores[idx] += 1.0 / (60 + rank + 1)
+                sem_rank_of[idx] = rank
 
         top_indices = sorted(range(n), key=lambda i: rrf_scores[i], reverse=True)[:top_k]
 
@@ -127,8 +129,8 @@ class HybridIndex:
                 file_path=d.get("file_path", ""),
                 node_type=d.get("node_type", ""),
                 score=rrf_scores[idx],
-                bm25_rank=ranked_bm25.index(idx) if ranked_bm25 else -1,
-                semantic_rank=ranked_sem.index(idx) if ranked_sem else -1,
+                bm25_rank=bm25_rank_of.get(idx, -1),
+                semantic_rank=sem_rank_of.get(idx, -1),
                 line_start=d.get("line_start", 0),
             ))
 

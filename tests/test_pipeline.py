@@ -10,6 +10,8 @@ import tempfile
 import os
 from pathlib import Path
 
+import pytest
+
 
 def _write_tmp(files: dict[str, str]) -> str:
     """Write a dict of {rel_path: content} to a temp directory, return root."""
@@ -40,15 +42,33 @@ def test_walk_tree_finds_python_files():
     assert not any("node_modules" in p for p in rel_paths)
 
 
+def test_walk_tree_respects_extensions():
+    from graphcode.phases.structure import walk_tree
+    root = _write_tmp({
+        "app.py": "x = 1",
+        "readme.md": "# hi",
+        "data.csv": "a,b,c",
+    })
+    sm = walk_tree(root)
+    assert sm.file_count == 1
+    assert sm.files[0].extension == ".py"
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: AST parsing
 # ---------------------------------------------------------------------------
 
-def test_parse_python_functions():
+def _require_tree_sitter():
     try:
-        from graphcode.phases.ast_parser import parse_file
+        import tree_sitter
+        import tree_sitter_python
     except ImportError:
-        return  # tree-sitter not installed in CI — skip
+        pytest.skip("tree-sitter not installed")
+
+
+def test_parse_python_functions():
+    _require_tree_sitter()
+    from graphcode.phases.ast_parser import parse_file
 
     root = _write_tmp({"module.py": """
         def greet(name):
@@ -67,10 +87,8 @@ def test_parse_python_functions():
 
 
 def test_parse_python_imports():
-    try:
-        from graphcode.phases.ast_parser import parse_file
-    except ImportError:
-        return
+    _require_tree_sitter()
+    from graphcode.phases.ast_parser import parse_file
 
     root = _write_tmp({"mod.py": """
         import os
@@ -84,17 +102,38 @@ def test_parse_python_imports():
     assert "pathlib" in modules
 
 
+def test_parse_python_docstrings():
+    _require_tree_sitter()
+    from graphcode.phases.ast_parser import parse_file
+
+    root = _write_tmp({"doc.py": '''
+        def documented():
+            """This is a docstring."""
+            pass
+
+        class MyClass:
+            """Class docstring."""
+            def method(self):
+                """Method docstring."""
+                pass
+    '''})
+    pf = parse_file(str(Path(root) / "doc.py"))
+    assert pf is not None
+    by_name = {s.name: s for s in pf.symbols}
+    assert "This is a docstring." in by_name["documented"].docstring
+    assert "Class docstring." in by_name["MyClass"].docstring
+    assert "Method docstring." in by_name["MyClass.method"].docstring
+
+
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
 
 def test_graph_build_nodes_and_edges():
-    try:
-        from graphcode.phases.ast_parser import parse_file
-        from graphcode.phases.graph_builder import build_graph
-        from graphcode.models import NodeType, EdgeType
-    except ImportError:
-        return
+    _require_tree_sitter()
+    from graphcode.phases.ast_parser import parse_file
+    from graphcode.phases.graph_builder import build_graph
+    from graphcode.models import NodeType, EdgeType
 
     root = _write_tmp({"app.py": """
         def start():
@@ -114,6 +153,50 @@ def test_graph_build_nodes_and_edges():
     func_nodes = graph.nodes(NodeType.FUNCTION)
     assert len(file_nodes) >= 1
     assert len(func_nodes) >= 2
+
+
+def test_graph_no_duplicate_edges():
+    from graphcode.graph.code_graph import CodeGraph
+    from graphcode.models import NodeType, EdgeType, SymbolNode, SymbolEdge
+
+    g = CodeGraph()
+    g.add_node(SymbolNode(id="a", name="a", node_type=NodeType.FUNCTION, file_path="f.py"))
+    g.add_node(SymbolNode(id="b", name="b", node_type=NodeType.FUNCTION, file_path="f.py"))
+    g.add_edge(SymbolEdge(source_id="a", target_id="b", edge_type=EdgeType.CALLS))
+    g.add_edge(SymbolEdge(source_id="a", target_id="b", edge_type=EdgeType.CALLS))
+    assert g.edge_count() == 1
+
+
+def test_graph_call_resolution_prefers_same_file():
+    _require_tree_sitter()
+    from graphcode.phases.ast_parser import parse_file
+    from graphcode.phases.graph_builder import build_graph
+    from graphcode.models import EdgeType
+
+    root = _write_tmp({
+        "a.py": """
+            def helper():
+                pass
+
+            def main():
+                helper()
+        """,
+        "b.py": """
+            def helper():
+                pass
+        """,
+    })
+    pf_a = parse_file(str(Path(root) / "a.py"))
+    pf_b = parse_file(str(Path(root) / "b.py"))
+    assert pf_a and pf_b
+    graph = build_graph([pf_a, pf_b])
+
+    main_id = f"{str(Path(root) / 'a.py')}::main"
+    helper_a_id = f"{str(Path(root) / 'a.py')}::helper"
+    helper_b_id = f"{str(Path(root) / 'b.py')}::helper"
+
+    assert graph.has_edge(main_id, helper_a_id, EdgeType.CALLS)
+    assert not graph.has_edge(main_id, helper_b_id, EdgeType.CALLS)
 
 
 # ---------------------------------------------------------------------------
@@ -173,18 +256,90 @@ def test_coverage_tour():
 
 
 # ---------------------------------------------------------------------------
+# Resolver
+# ---------------------------------------------------------------------------
+
+def test_resolver_upgrades_and_cleans_placeholders():
+    _require_tree_sitter()
+    from graphcode.phases.ast_parser import parse_file
+    from graphcode.phases.graph_builder import build_graph
+    from graphcode.phases.resolver import resolve_imports
+    from graphcode.models import NodeType, EdgeType
+
+    root = _write_tmp({
+        "main.py": """
+            from utils import helper
+        """,
+        "utils.py": """
+            def helper():
+                pass
+        """,
+    })
+    pf_main = parse_file(str(Path(root) / "main.py"))
+    pf_utils = parse_file(str(Path(root) / "utils.py"))
+    assert pf_main and pf_utils
+    graph = build_graph([pf_main, pf_utils])
+    graph = resolve_imports(graph, root)
+
+    main_path = str(Path(root) / "main.py")
+    utils_path = str(Path(root) / "utils.py")
+    assert graph.has_edge(main_path, utils_path, EdgeType.IMPORTS)
+    module_nodes = graph.nodes(NodeType.MODULE)
+    for mid in module_nodes:
+        assert graph.in_degree(mid) == 0 or (graph.get_node_data(mid) or {}).get("name") != "utils"
+
+
+# ---------------------------------------------------------------------------
+# Indexer
+# ---------------------------------------------------------------------------
+
+def test_hybrid_index_bm25_search():
+    from graphcode.graph.code_graph import CodeGraph
+    from graphcode.phases.indexer import HybridIndex
+    from graphcode.models import NodeType, SymbolNode
+
+    g = CodeGraph()
+    g.add_node(SymbolNode(id="auth", name="authenticate_user", node_type=NodeType.FUNCTION, file_path="auth.py", signature="def authenticate_user(username, password)"))
+    g.add_node(SymbolNode(id="db", name="connect_database", node_type=NodeType.FUNCTION, file_path="db.py", signature="def connect_database(url)"))
+
+    idx = HybridIndex(g)
+    idx.build(use_semantic=False)
+    results = idx.search("authenticate", top_k=5)
+    assert len(results) >= 1
+    assert results[0].name == "authenticate_user"
+
+
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
+
+def test_graph_save_load(tmp_path):
+    from graphcode.graph.code_graph import CodeGraph
+    from graphcode.models import NodeType, EdgeType, SymbolNode, SymbolEdge
+
+    g = CodeGraph()
+    g.add_node(SymbolNode(id="a", name="a", node_type=NodeType.FUNCTION, file_path="f.py"))
+    g.add_node(SymbolNode(id="b", name="b", node_type=NodeType.FUNCTION, file_path="f.py"))
+    g.add_edge(SymbolEdge(source_id="a", target_id="b", edge_type=EdgeType.CALLS))
+
+    path = str(tmp_path / "graph.json")
+    g.save(path)
+
+    loaded = CodeGraph.load(path)
+    assert loaded.node_count() == 2
+    assert loaded.edge_count() == 1
+    assert loaded.has_edge("a", "b")
+
+
+# ---------------------------------------------------------------------------
 # Clustering fallback
 # ---------------------------------------------------------------------------
 
 def test_cluster_fallback():
-    from graphcode.phases.ast_parser import ParsedFile
-    from graphcode.phases.graph_builder import build_graph
     from graphcode.phases.clustering import cluster_graph
-    from graphcode.models import NodeType, SymbolNode
 
-    # Build a minimal graph without needing tree-sitter
     from graphcode.graph.code_graph import CodeGraph
-    from graphcode.models import EdgeType, SymbolEdge
+    from graphcode.models import NodeType, EdgeType, SymbolNode, SymbolEdge
 
     g = CodeGraph()
     for i in range(5):

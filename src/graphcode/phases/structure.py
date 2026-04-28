@@ -16,8 +16,6 @@ _IGNORE_DIRS = {
 SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
     ".py", ".js", ".mjs", ".cjs", ".jsx",
     ".ts", ".tsx",
-    ".java", ".go", ".rs",
-    ".c", ".cpp", ".h", ".hpp", ".cs",
 })
 
 

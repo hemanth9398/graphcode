@@ -61,6 +61,7 @@ def resolve_imports(graph: CodeGraph, root: str) -> CodeGraph:
     MODULE placeholder target with the real FILE node.
     """
     new_edges: list[SymbolEdge] = []
+    stale_edges: list[tuple[str, str]] = []
 
     for src, dst, _ in graph.edges(edge_type=EdgeType.IMPORTS):
         src_data = graph.get_node_data(src) or {}
@@ -82,8 +83,12 @@ def resolve_imports(graph: CodeGraph, root: str) -> CodeGraph:
                     target_id=resolved,
                     edge_type=EdgeType.IMPORTS,
                 ))
+            stale_edges.append((src, dst))
 
     for edge in new_edges:
         graph.add_edge(edge)
+
+    for src, dst in stale_edges:
+        graph.remove_edge(src, dst, EdgeType.IMPORTS)
 
     return graph

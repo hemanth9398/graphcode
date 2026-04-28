@@ -89,7 +89,7 @@ def build_graph(parsed_files: list[ParsedFile]) -> CodeGraph:
                     edge_type=EdgeType.IMPORTS,
                 ))
 
-        # CALLER --calls--> CALLEE (name-matched)
+        # CALLER --calls--> CALLEE (name-matched, prefer same-file)
         for ref in pf.call_refs:
             if not graph.has_node(ref.caller_id):
                 continue
@@ -97,9 +97,14 @@ def build_graph(parsed_files: list[ParsedFile]) -> CodeGraph:
             candidates = name_index.get(callee_name) or name_index.get(
                 callee_name.split(".")[-1], []
             )
-            for callee_id in candidates:
-                if callee_id == ref.caller_id:
-                    continue  # skip self-calls
+            candidates = [c for c in candidates if c != ref.caller_id]
+            if not candidates:
+                continue
+
+            same_file = [c for c in candidates if c.startswith(pf.path + "::")]
+            best = same_file if same_file else candidates
+
+            for callee_id in best:
                 if not graph.has_edge(ref.caller_id, callee_id, EdgeType.CALLS):
                     graph.add_edge(SymbolEdge(
                         source_id=ref.caller_id,

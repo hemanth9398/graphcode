@@ -50,13 +50,17 @@ def _file_clusters(graph: CodeGraph) -> list[list[str]]:
 
 
 def _cohesion(graph: CodeGraph, node_ids: list[str]) -> float:
-    """Internal-edge ratio: edges within cluster / max possible edges."""
+    """Internal-edge ratio: unique undirected edges within cluster / max possible."""
     n = len(node_ids)
     if n < 2:
         return 1.0
     inside = set(node_ids)
-    internal = sum(1 for u, v, _ in graph.edges() if u in inside and v in inside)
-    return internal / (n * (n - 1))
+    pairs: set[tuple[str, str]] = set()
+    for u, v, _ in graph.edges():
+        if u in inside and v in inside:
+            pairs.add((min(u, v), max(u, v)))
+    max_pairs = n * (n - 1) / 2
+    return len(pairs) / max_pairs
 
 
 def _dominant_label(graph: CodeGraph, node_ids: list[str]) -> str:

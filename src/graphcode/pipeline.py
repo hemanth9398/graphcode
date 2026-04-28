@@ -12,6 +12,7 @@ Optional:  LLM emulation (Qwen), LadybugDB persistence
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from rich.console import Console
@@ -87,10 +88,13 @@ def run_pipeline(
 
         # ── Phase 2: AST Parsing ──────────────────────────────────────────
         t = progress.add_task("Phase 2  parsing ASTs (Tree-sitter) …", total=None)
-        for f in session.structure.files:
-            pf = parse_file(f.path)
-            if pf:
-                session.parsed_files.append(pf)
+        file_paths = [f.path for f in session.structure.files]
+        with ProcessPoolExecutor() as pool:
+            futures = {pool.submit(parse_file, p): p for p in file_paths}
+            for future in as_completed(futures):
+                pf = future.result()
+                if pf:
+                    session.parsed_files.append(pf)
         total_syms = sum(len(p.symbols) for p in session.parsed_files)
         progress.update(t, description=f"[green]Phase 2 ✓  {len(session.parsed_files)} files · {total_syms} symbols")
         progress.stop_task(t)

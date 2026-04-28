@@ -86,6 +86,20 @@ def _make_id(file_path: str, qualified_name: str) -> str:
 # Python extractor
 # ---------------------------------------------------------------------------
 
+def _extract_docstring(node: Any, src: bytes) -> str:
+    """Extract the docstring from a function/class body if present."""
+    body = node.child_by_field_name("body")
+    if not body or body.child_count == 0:
+        return ""
+    first = body.children[0]
+    if first.type == "expression_statement" and first.child_count > 0:
+        expr = first.children[0]
+        if expr.type == "string":
+            raw = _text(expr, src)
+            return raw.strip("\"'").strip()
+    return ""
+
+
 def _extract_python(root_node: Any, src: bytes, fpath: str) -> tuple[
     list[SymbolNode], list[dict], list[str], list[CallRef]
 ]:
@@ -106,7 +120,6 @@ def _extract_python(root_node: Any, src: bytes, fpath: str) -> tuple[
             fname = _text(name_node, src)
             qualified = f"{class_ctx}.{fname}" if class_ctx else fname
             ntype = NodeType.METHOD if class_ctx else NodeType.FUNCTION
-            # Extract first-line signature
             params_node = node.child_by_field_name("parameters")
             sig = f"def {qualified}{_text(params_node, src) if params_node else '()'}"
             sym = SymbolNode(
@@ -117,6 +130,7 @@ def _extract_python(root_node: Any, src: bytes, fpath: str) -> tuple[
                 line_start=node.start_point[0] + 1,
                 line_end=node.end_point[0] + 1,
                 signature=sig,
+                docstring=_extract_docstring(node, src),
                 language="python",
             )
             symbols.append(sym)
@@ -139,6 +153,7 @@ def _extract_python(root_node: Any, src: bytes, fpath: str) -> tuple[
                 file_path=fpath,
                 line_start=node.start_point[0] + 1,
                 line_end=node.end_point[0] + 1,
+                docstring=_extract_docstring(node, src),
                 language="python",
             ))
             for child in node.children:
@@ -193,6 +208,16 @@ def _extract_python(root_node: Any, src: bytes, fpath: str) -> tuple[
 # JavaScript / TypeScript extractor
 # ---------------------------------------------------------------------------
 
+def _extract_jsdoc(node: Any, src: bytes) -> str:
+    """Extract JSDoc comment preceding a declaration node."""
+    prev = node.prev_sibling
+    if prev and prev.type == "comment":
+        text = _text(prev, src).strip()
+        if text.startswith("/**"):
+            return text.strip("/* \n\r\t")
+    return ""
+
+
 def _extract_js_ts(root_node: Any, src: bytes, fpath: str, lang: str) -> tuple[
     list[SymbolNode], list[dict], list[str], list[CallRef]
 ]:
@@ -217,6 +242,7 @@ def _extract_js_ts(root_node: Any, src: bytes, fpath: str, lang: str) -> tuple[
                     file_path=fpath,
                     line_start=node.start_point[0] + 1,
                     line_end=node.end_point[0] + 1,
+                    docstring=_extract_jsdoc(node, src),
                     language=lang,
                 ))
                 for child in node.children:
@@ -257,6 +283,7 @@ def _extract_js_ts(root_node: Any, src: bytes, fpath: str, lang: str) -> tuple[
                 file_path=fpath,
                 line_start=node.start_point[0] + 1,
                 line_end=node.end_point[0] + 1,
+                docstring=_extract_jsdoc(node, src),
                 language=lang,
             ))
             for child in node.children:
@@ -276,6 +303,7 @@ def _extract_js_ts(root_node: Any, src: bytes, fpath: str, lang: str) -> tuple[
                     file_path=fpath,
                     line_start=node.start_point[0] + 1,
                     line_end=node.end_point[0] + 1,
+                    docstring=_extract_jsdoc(node, src),
                     language=lang,
                 ))
                 for child in node.children:
@@ -371,7 +399,7 @@ def parse_file(file_path: str) -> ParsedFile | None:
         parser.set_language(language)  # type: ignore[attr-defined]
 
     tree = parser.parse(source)
-    pf = ParsedFile(path=file_path, language=lang, raw_source=source, tree=tree)
+    pf = ParsedFile(path=file_path, language=lang)
 
     if lang == "python":
         pf.symbols, pf.imports, pf.exports, pf.call_refs = _extract_python(
@@ -382,4 +410,6 @@ def parse_file(file_path: str) -> ParsedFile | None:
             tree.root_node, source, file_path, lang
         )
 
+    # Do not store the tree or raw source — tree_sitter.Tree cannot be pickled,
+    # which breaks ProcessPoolExecutor. All extraction is already done above.
     return pf
